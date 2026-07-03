@@ -45,8 +45,23 @@ namespace HatchWipeout.Commands
                     using (var tr = db.TransactionManager.StartTransaction())
                     {
                         int processedCount = BlockHatchLogic.Execute(db, tr, objectIds);
-                        ed.WriteMessage($"\nHoàn tất! Đã tạo Hatch cho {processedCount} block definition.");
+                        
+                        // Cập nhật hiển thị (Graphics) cho toàn bộ các Block Reference được chọn
+                        foreach (ObjectId blockRefId in objectIds)
+                        {
+                            var blockRef = tr.GetObject(blockRefId, OpenMode.ForWrite) as BlockReference;
+                            if (blockRef != null)
+                            {
+                                blockRef.RecordGraphicsModified(true);
+                            }
+                        }
+
                         tr.Commit();
+                        
+                        // Force AutoCAD vẽ lại màn hình làm việc (Regen) để lập tức hiển thị Hatch vừa chèn
+                        ed.Regen();
+                        
+                        ed.WriteMessage($"\nHoàn tất! Đã tạo Hatch cho {processedCount} block definition.");
                     }
                 }
             }
