@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+  SchemaVersion="1.0"
+  AppVersion="1.0.0"
+  ProductCode="{B2C3D4E5-F6A7-8901-BCDE-FA2345678901}"
+  Name="HatchWipeout"
+  Description="Plugin tạo Hatch Solid theo Convex Hull của Block"
+  Author="TamHoang"
+  Icon="./Contents/HatchWipeout.dll"
+  HelpFile=""
+  AutodeskProduct="AutoCAD"
+  FriendlyVersion="1.0.0">
+
+  <CompanyDetails Name="TamHoang" />
+
+  <RuntimeRequirements
+    OS="Win64"
+    Platform="AutoCAD" />
+
+  <Components>
+    <ComponentEntry
+      AppName="HatchWipeout"
+      ModuleName="./Contents/HatchWipeout.dll"
+      AppDescription="Plugin tạo Hatch Solid theo Convex Hull của Block"
+      LoadOnAutoCADStartup="True"
+      LoadOnCommandInvocation="True">
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

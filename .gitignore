@@ -1,0 +1,12 @@
+# Visual Studio
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.userosscache
+*.sln.docstates
+
+# Tooling
+.gemini/
+.agents/
+/C:/Users/TamHoang/.gemini/antigravity-ide/

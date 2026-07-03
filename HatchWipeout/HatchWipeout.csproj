@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>HatchWipeout</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AutoCAD.NET" Version="24.3.0" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <!-- Auto deploy to ApplicationPlugins .bundle -->
+  <Target Name="DeployToBundle" AfterTargets="Build">
+    <PropertyGroup>
+      <BundleRoot>$(AppData)\Autodesk\ApplicationPlugins\HatchWipeout.bundle\</BundleRoot>
+      <BundleContents>$(BundleRoot)Contents\</BundleContents>
+    </PropertyGroup>
+    <MakeDir Directories="$(BundleContents)" />
+    <ItemGroup>
+      <DeployFiles Include="$(OutputPath)**\*.*" />
+      <PackageContentsFile Include="$(ProjectDir)HatchWipeout.bundle\PackageContents.xml" Condition="Exists('$(ProjectDir)HatchWipeout.bundle\PackageContents.xml')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(BundleContents)%(RecursiveDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PackageContentsFile)" DestinationFolder="$(BundleRoot)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
