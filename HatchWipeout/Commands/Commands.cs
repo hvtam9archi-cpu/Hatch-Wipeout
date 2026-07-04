@@ -12,7 +12,7 @@ namespace HatchWipeout.Commands
     public class Commands
     {
         /// <summary>
-        /// Lệnh TH: Chọn Block Reference → tạo Hatch Solid (Convex Hull) bên trong Block Definition.
+        /// Lệnh TH: Chọn Block Reference → tạo Hatch Solid (Boundary Extraction) bên trong Block Definition.
         /// </summary>
         [CommandMethod("TH")]
         public void BlockHatchCommand()
@@ -25,7 +25,7 @@ namespace HatchWipeout.Commands
             try
             {
                 // Chỉ cho phép chọn Block Reference (INSERT)
-                ed.WriteMessage("\n>> Chọn các Block Reference để tạo Hatch Solid theo Convex Hull: ");
+                ed.WriteMessage("\n>> Chọn các Block Reference để tạo Hatch Solid (Boundary Extraction): ");
                 var filter = new SelectionFilter(new[]
                 {
                     new TypedValue((int)DxfCode.Start, "INSERT")
