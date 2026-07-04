@@ -126,9 +126,26 @@ namespace HatchWipeout.Commands
                     Image = GetTextBitmap(16, "BW")
                 };
 
+                // Tạo Button XH
+                RibbonButton btnRemove = new RibbonButton
+                {
+                    Id = "XH_BTN",
+                    Text = "\nXóa Hatch/Wipeout",
+                    ShowText = true,
+                    ShowImage = true,
+                    Size = RibbonItemSize.Large,
+                    Orientation = System.Windows.Controls.Orientation.Vertical,
+                    CommandParameter = "\x03\x03" + "XH ",
+                    CommandHandler = _cmdHandler,
+                    LargeImage = GetTextBitmap(32, "XH"),
+                    Image = GetTextBitmap(16, "XH")
+                };
+
                 rps.Items.Add(btnHatch);
                 rps.Items.Add(new RibbonSeparator());
                 rps.Items.Add(btnWipeout);
+                rps.Items.Add(new RibbonSeparator());
+                rps.Items.Add(btnRemove);
                 rtb.Panels.Add(rp);
             }
             catch (System.Exception ex)

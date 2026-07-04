@@ -1,6 +1,7 @@
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.ApplicationServices;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -36,76 +37,57 @@ namespace HatchWipeout.Logic
             return processedCount;
         }
 
-        /// <summary>
-        /// Xử lý chính cho một BlockTableRecord:
-        /// 1. Thu thập tất cả curves (giữ nguyên closed curves, explode open polylines)
-        /// 2. Tạo Region riêng biệt cho closed curves
-        /// 3. Shatter open curves + tạo Region từ soup
-        /// 4. Union tất cả Regions
-        /// 5. Tạo Hatch từ Region cuối cùng
-        /// </summary>
         private static bool ProcessBlockRecord(BlockTableRecord blockRecord, Transaction tr, Database db)
         {
-            // Thu thập curves, phân loại thành closed và open
-            var closedCurves = new List<Curve>();
-            var openCurves = new List<Curve>();
-            CollectCurvesFromBlock(blockRecord, tr, Matrix3d.Identity, closedCurves, openCurves);
+            var ed = Application.DocumentManager.MdiActiveDocument.Editor;
+            ed.WriteMessage($"\n[TH-DEBUG] Báº¯t Ä‘áº§u xá»­ lÃ½ block: {blockRecord.Name}");
 
-            if (closedCurves.Count == 0 && openCurves.Count == 0) return false;
+            var allCurves = new List<Curve>();
+            CollectCurvesFromBlock(blockRecord, tr, Matrix3d.Identity, allCurves);
 
-            var allRegions = new List<Region>();
-
-            // === PHẦN 1: Tạo Region từ mỗi closed curve riêng biệt ===
-            // Circle, Ellipse, closed Polyline → mỗi cái tự tạo được 1 Region
-            foreach (var closedCurve in closedCurves)
+            if (allCurves.Count == 0)
             {
-                var regions = CreateRegionsFromSingleCurve(closedCurve);
-                allRegions.AddRange(regions);
+                ed.WriteMessage($"\n  - [Lá»—i] KhÃ´ng tÃ¬m tháº¥y Ä‘á»‘i tÆ°á»£ng há»£p lá»‡ trong block.");
+                return false;
             }
+            ed.WriteMessage($"\n  - Thu tháº­p Ä‘Æ°á»£c {allCurves.Count} Ä‘á»‘i tÆ°á»£ng dáº¡ng Ä‘Æ°á»ng.");
 
-            // === PHẦN 2: Shatter open curves tại giao điểm + tạo Region ===
-            if (openCurves.Count > 0)
+            List<Point2d> points = SamplePointsFromCurves(allCurves);
+            ed.WriteMessage($"\n  - TrÃ­ch xuáº¥t Ä‘Æ°á»£c {points.Count} Ä‘iá»ƒm máº«u.");
+
+            if (points.Count < 3)
             {
-                // Cũng shatter open curves với closed curves (để cắt giao điểm)
-                var allCurvesForShatter = new List<Curve>();
-                allCurvesForShatter.AddRange(openCurves);
-                // Clone closed curves để shatter (giữ nguyên bản gốc đã dùng ở trên)
-                foreach (var cc in closedCurves)
-                {
-                    allCurvesForShatter.Add(cc.Clone() as Curve);
-                }
-
-                List<Curve> shatteredSoup = ShatterCurvesAtIntersections(allCurvesForShatter);
-                var soupRegions = CreateRegionsFromSoup(shatteredSoup);
-                allRegions.AddRange(soupRegions);
-
-                // Cleanup shattered curves
-                foreach (var c in shatteredSoup) if (!c.IsDisposed) c.Dispose();
-            }
-
-            if (allRegions.Count == 0)
-            {
-                // Cleanup
-                foreach (var c in closedCurves) if (!c.IsDisposed) c.Dispose();
-                foreach (var c in openCurves) if (!c.IsDisposed) c.Dispose();
+                ed.WriteMessage($"\n  - [Lá»—i] KhÃ´ng Ä‘á»§ Ä‘iá»ƒm Ä‘á»ƒ táº¡o Ä‘Æ°á»ng bao khÃ©p kÃ­n.");
+                foreach (var c in allCurves) if (!c.IsDisposed) c.Dispose();
                 return false;
             }
 
-            // === PHẦN 3: Union tất cả Regions ===
-            Region finalRegion = UnionRegions(allRegions);
+            List<Point2d> hullPoints = GetConvexHull(points);
+            ed.WriteMessage($"\n  - Táº¡o Convex Hull vá»›i {hullPoints.Count} Ä‘á»‰nh.");
+
+            Polyline hullPolyline = new Polyline();
+            for (int i = 0; i < hullPoints.Count; i++)
+            {
+                hullPolyline.AddVertexAt(i, hullPoints[i], 0, 0, 0);
+            }
+            hullPolyline.Closed = true;
 
             bool result = false;
-            if (finalRegion != null)
+            try
             {
-                // === PHẦN 4: Tạo Hatch trực tiếp từ Region (không cần convert sang Polyline) ===
-                CreateSolidHatchFromRegion(blockRecord, tr, db, finalRegion);
+                CreateSolidHatchFromPolyline(blockRecord, tr, db, hullPolyline);
+                ed.WriteMessage($"\n  - [ThÃ nh cÃ´ng] Táº¡o Solid Hatch thÃ nh cÃ´ng cho block: {blockRecord.Name}.");
                 result = true;
-                finalRegion.Dispose();
             }
-
-            // Cleanup
-            foreach (var c in closedCurves) if (!c.IsDisposed) c.Dispose();
-            foreach (var c in openCurves) if (!c.IsDisposed) c.Dispose();
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n  - [Lá»—i] {ex.Message}");
+            }
+            finally
+            {
+                hullPolyline.Dispose();
+                foreach (var c in allCurves) if (!c.IsDisposed) c.Dispose();
+            }
 
             return result;
         }
@@ -117,31 +99,20 @@ namespace HatchWipeout.Logic
             return blockRef.BlockTableRecord;
         }
 
-        // =====================================================================
-        // 1. THU THẬP CURVES – PHÂN LOẠI CLOSED / OPEN
-        // =====================================================================
-
-        /// <summary>
-        /// Duyệt tất cả entities trong BlockTableRecord, clone + transform,
-        /// phân loại thành closed curves và open curves.
-        /// KHÔNG explode Circle, Ellipse, closed Polyline – giữ nguyên để tạo Region chính xác.
-        /// </summary>
         private static void CollectCurvesFromBlock(
             BlockTableRecord btr, Transaction tr, Matrix3d parentTransform,
-            List<Curve> closedCurves, List<Curve> openCurves)
+            List<Curve> allCurves)
         {
             foreach (ObjectId id in btr)
             {
                 Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
                 if (ent == null || !ent.Visible) continue;
 
-                // Clone + Transform
                 Entity clonedEnt = ent.Clone() as Entity;
                 clonedEnt.TransformBy(parentTransform);
 
                 if (clonedEnt is BlockReference blockRef)
                 {
-                    // Đệ quy nested block
                     try
                     {
                         ObjectId nestedRecordId = GetEffectiveBlockTableRecordId(blockRef);
@@ -149,60 +120,17 @@ namespace HatchWipeout.Logic
                         if (nestedRecord != null)
                         {
                             CollectCurvesFromBlock(nestedRecord, tr,
-                                parentTransform * blockRef.BlockTransform, closedCurves, openCurves);
+                                parentTransform * blockRef.BlockTransform, allCurves);
                         }
                     }
                     catch { }
                     clonedEnt.Dispose();
                 }
-                else if (clonedEnt is Circle circle)
+                else if (clonedEnt is Curve curve)
                 {
-                    // Circle luôn khép kín – giữ nguyên, flatten Z
-                    Curve flat = FlattenCircle(circle);
-                    if (flat != null) closedCurves.Add(flat);
+                    Curve flat = FlattenCurve(curve);
+                    if (flat != null) allCurves.Add(flat);
                     clonedEnt.Dispose();
-                }
-                else if (clonedEnt is Ellipse ellipse)
-                {
-                    // Ellipse khép kín – giữ nguyên, flatten
-                    Curve flat = FlattenEllipse(ellipse);
-                    if (flat != null) closedCurves.Add(flat);
-                    clonedEnt.Dispose();
-                }
-                else if (clonedEnt is Polyline polyline)
-                {
-                    Curve flat = FlattenPolyline(polyline);
-                    if (flat != null)
-                    {
-                        if (((Polyline)flat).Closed)
-                            closedCurves.Add(flat);
-                        else
-                            ExplodeAndAddOpen(flat, openCurves);
-                    }
-                    clonedEnt.Dispose();
-                }
-                else if (clonedEnt is Polyline2d || clonedEnt is Polyline3d)
-                {
-                    // Explode Polyline2d/3d thành Line/Arc
-                    DBObjectCollection exploded = new DBObjectCollection();
-                    try { clonedEnt.Explode(exploded); } catch { }
-                    foreach (DBObject obj in exploded)
-                    {
-                        if (obj is Curve c)
-                        {
-                            Curve flat = FlattenBasicCurve(c);
-                            if (flat != null) openCurves.Add(flat);
-                            else c.Dispose();
-                        }
-                        else obj.Dispose();
-                    }
-                    clonedEnt.Dispose();
-                }
-                else if (clonedEnt is Line || clonedEnt is Arc || clonedEnt is Spline)
-                {
-                    Curve flat = FlattenBasicCurve(clonedEnt as Curve);
-                    if (flat != null) openCurves.Add(flat);
-                    else clonedEnt.Dispose();
                 }
                 else
                 {
@@ -211,430 +139,181 @@ namespace HatchWipeout.Logic
             }
         }
 
-        /// <summary>
-        /// Explode một open Polyline thành Line/Arc rời để tham gia shatter.
-        /// </summary>
-        private static void ExplodeAndAddOpen(Curve curve, List<Curve> openCurves)
-        {
-            DBObjectCollection exploded = new DBObjectCollection();
-            try { curve.Explode(exploded); } catch { openCurves.Add(curve); return; }
-
-            foreach (DBObject obj in exploded)
-            {
-                if (obj is Curve c)
-                {
-                    Curve flat = FlattenBasicCurve(c);
-                    if (flat != null) openCurves.Add(flat);
-                    else c.Dispose();
-                }
-                else obj.Dispose();
-            }
-            curve.Dispose();
-        }
-
-        // =====================================================================
-        // FLATTEN HELPERS
-        // =====================================================================
-
-        private static Curve FlattenCircle(Circle circle)
+        private static Curve FlattenCurve(Curve cv)
         {
             try
             {
-                var c = circle.Clone() as Circle;
-                c.Center = new Point3d(c.Center.X, c.Center.Y, 0);
-                c.Normal = Vector3d.ZAxis;
+                var c = cv.Clone() as Curve;
+                if (c is Polyline3d || c is Polyline2d)
+                {
+                    return cv.Clone() as Curve;
+                }
+                
+                if (c is Line ln)
+                {
+                    ln.StartPoint = new Point3d(ln.StartPoint.X, ln.StartPoint.Y, 0);
+                    ln.EndPoint = new Point3d(ln.EndPoint.X, ln.EndPoint.Y, 0);
+                    return ln;
+                }
+                if (c is Polyline pl)
+                {
+                    pl.Elevation = 0;
+                    pl.Normal = Vector3d.ZAxis;
+                    return pl;
+                }
+                if (c is Circle cir)
+                {
+                    cir.Center = new Point3d(cir.Center.X, cir.Center.Y, 0);
+                    cir.Normal = Vector3d.ZAxis;
+                    return cir;
+                }
+                if (c is Arc arc)
+                {
+                    arc.Center = new Point3d(arc.Center.X, arc.Center.Y, 0);
+                    arc.Normal = Vector3d.ZAxis;
+                    return arc;
+                }
                 return c;
             }
             catch { return null; }
         }
 
-        private static Curve FlattenEllipse(Ellipse ellipse)
+        private static List<Point2d> SamplePointsFromCurves(List<Curve> curves)
         {
-            try
+            var points = new List<Point2d>();
+            foreach (var curve in curves)
             {
-                var e = ellipse.Clone() as Ellipse;
-                e.Set(
-                    new Point3d(e.Center.X, e.Center.Y, 0),
-                    Vector3d.ZAxis,
-                    new Vector3d(e.MajorAxis.X, e.MajorAxis.Y, 0),
-                    e.RadiusRatio,
-                    e.StartAngle,
-                    e.EndAngle
-                );
-                return e;
-            }
-            catch { return null; }
-        }
+                if (curve == null || curve.IsDisposed) continue;
 
-        private static Curve FlattenPolyline(Polyline polyline)
-        {
-            try
-            {
-                var p = polyline.Clone() as Polyline;
-                p.Elevation = 0;
-                p.Normal = Vector3d.ZAxis;
-                return p;
-            }
-            catch { return null; }
-        }
-
-        private static Curve FlattenBasicCurve(Curve cv)
-        {
-            try
-            {
-                if (cv is Line ln)
+                try
                 {
-                    if (ln.Length < 1e-4) return null;
-                    var l = ln.Clone() as Line;
-                    l.StartPoint = new Point3d(l.StartPoint.X, l.StartPoint.Y, 0);
-                    l.EndPoint = new Point3d(l.EndPoint.X, l.EndPoint.Y, 0);
-                    return l;
-                }
-                else if (cv is Arc arc)
-                {
-                    var a = arc.Clone() as Arc;
-                    a.Center = new Point3d(a.Center.X, a.Center.Y, 0);
-                    a.Normal = Vector3d.ZAxis;
-                    return a;
-                }
-                else if (cv is Spline spline && spline.IsPlanar)
-                {
-                    return spline.Clone() as Curve;
-                }
-                return null;
-            }
-            catch { return null; }
-        }
+                    points.Add(new Point2d(curve.StartPoint.X, curve.StartPoint.Y));
+                    points.Add(new Point2d(curve.EndPoint.X, curve.EndPoint.Y));
 
-        // =====================================================================
-        // 2. REGION TỪ SINGLE CLOSED CURVE
-        // =====================================================================
+                    if (curve is Line) continue;
 
-        /// <summary>
-        /// Tạo Region từ một đường cong khép kín đơn lẻ (Circle, Ellipse, closed Polyline).
-        /// </summary>
-        private static List<Region> CreateRegionsFromSingleCurve(Curve closedCurve)
-        {
-            var regions = new List<Region>();
-            var col = new DBObjectCollection { closedCurve };
-            try
-            {
-                DBObjectCollection res = Region.CreateFromCurves(col);
-                foreach (DBObject obj in res)
-                {
-                    if (obj is Region r) regions.Add(r);
-                    else obj.Dispose();
-                }
-            }
-            catch { }
-            return regions;
-        }
-
-        // =====================================================================
-        // 3. SHATTER (CẮT GIAO ĐIỂM)
-        // =====================================================================
-
-        private static List<Curve> ShatterCurvesAtIntersections(List<Curve> inputCurves)
-        {
-            List<Curve> workingSet = new List<Curve>();
-            foreach (var c in inputCurves) workingSet.Add(c.Clone() as Curve);
-
-            Dictionary<Curve, List<double>> splitMap = new Dictionary<Curve, List<double>>();
-            foreach (var c in workingSet) splitMap[c] = new List<double>();
-
-            for (int i = 0; i < workingSet.Count; i++)
-            {
-                for (int j = i + 1; j < workingSet.Count; j++)
-                {
-                    Curve c1 = workingSet[i];
-                    Curve c2 = workingSet[j];
-
-                    Point3dCollection pts = new Point3dCollection();
-                    try { c1.IntersectWith(c2, Intersect.OnBothOperands, pts, IntPtr.Zero, IntPtr.Zero); }
-                    catch { continue; }
-
-                    foreach (Point3d pt in pts)
+                    if (curve is Polyline pl)
                     {
-                        try { splitMap[c1].Add(c1.GetParameterAtPoint(pt)); } catch { }
-                        try { splitMap[c2].Add(c2.GetParameterAtPoint(pt)); } catch { }
-                    }
-                }
-            }
-
-            List<Curve> result = new List<Curve>();
-            foreach (var kvp in splitMap)
-            {
-                Curve c = kvp.Key;
-                List<double> paramsList = kvp.Value.Distinct().OrderBy(x => x).ToList();
-                double start = c.StartParam;
-                double end = c.EndParam;
-
-                paramsList.RemoveAll(p => Math.Abs(p - start) < 1e-5 || Math.Abs(p - end) < 1e-5);
-
-                if (paramsList.Count > 0)
-                {
-                    try
-                    {
-                        DoubleCollection doubles = new DoubleCollection(paramsList.ToArray());
-                        DBObjectCollection pieces = c.GetSplitCurves(doubles);
-                        foreach (DBObject obj in pieces)
+                        for (int i = 0; i < pl.NumberOfVertices; i++)
                         {
-                            if (obj is Curve piece) result.Add(piece);
-                            else obj.Dispose();
+                            points.Add(pl.GetPoint2dAt(i));
+                            
+                            if (pl.GetBulgeAt(i) != 0 && i < pl.NumberOfVertices - 1)
+                            {
+                                try
+                                {
+                                    double startDist = pl.GetDistanceAtParameter(i);
+                                    double endDist = pl.GetDistanceAtParameter(i + 1);
+                                    double len = endDist - startDist;
+                                    if (len > 1e-4)
+                                    {
+                                        int numSamples = Math.Max(2, (int)(len / 10.0));
+                                        for (int j = 1; j < numSamples; j++)
+                                        {
+                                            double dist = startDist + j * len / numSamples;
+                                            Point3d pt = pl.GetPointAtDist(dist);
+                                            points.Add(new Point2d(pt.X, pt.Y));
+                                        }
+                                    }
+                                }
+                                catch { }
+                            }
                         }
                     }
-                    catch { result.Add(c.Clone() as Curve); }
+                    else
+                    {
+                        SampleCurve(curve, points);
+                    }
                 }
-                else result.Add(c.Clone() as Curve);
+                catch { }
             }
-
-            foreach (var c in workingSet) c.Dispose();
-            return result;
+            return points;
         }
-
-        // =====================================================================
-        // 4. REGION OPERATIONS
-        // =====================================================================
-
-        private static List<Region> CreateRegionsFromSoup(List<Curve> soup)
+        
+        private static void SampleCurve(Curve curve, List<Point2d> points)
         {
-            List<Region> regions = new List<Region>();
-            if (soup.Count == 0) return regions;
-
-            DBObjectCollection col = new DBObjectCollection();
-            foreach (var c in soup) col.Add(c);
-
             try
             {
-                DBObjectCollection res = Region.CreateFromCurves(col);
-                foreach (DBObject obj in res)
+                double length = curve.GetDistanceAtParameter(curve.EndParam);
+                if (length < 1e-4) return;
+                
+                int numSamples = Math.Max(2, (int)(length / 10.0));
+                for (int i = 1; i < numSamples; i++)
                 {
-                    if (obj is Region r) regions.Add(r);
-                    else obj.Dispose();
+                    double dist = i * length / numSamples;
+                    Point3d pt = curve.GetPointAtDist(dist);
+                    points.Add(new Point2d(pt.X, pt.Y));
                 }
             }
             catch { }
-
-            return regions;
         }
 
-        private static Region UnionRegions(List<Region> regions)
+        private static List<Point2d> GetConvexHull(List<Point2d> points)
         {
-            if (regions.Count == 0) return null;
-            Region main = regions[0];
-            for (int i = 1; i < regions.Count; i++)
+            if (points.Count <= 2) return new List<Point2d>(points);
+
+            var sorted = points.Distinct().OrderBy(p => p.X).ThenBy(p => p.Y).ToList();
+            if (sorted.Count <= 2) return sorted;
+
+            double CrossProduct(Point2d o, Point2d a, Point2d b)
             {
-                try { main.BooleanOperation(BooleanOperationType.BoolUnite, regions[i]); }
-                catch { }
-                regions[i].Dispose();
+                return (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
             }
-            return main;
+
+            var lower = new List<Point2d>();
+            foreach (var p in sorted)
+            {
+                while (lower.Count >= 2 && CrossProduct(lower[lower.Count - 2], lower[lower.Count - 1], p) <= 0)
+                {
+                    lower.RemoveAt(lower.Count - 1);
+                }
+                lower.Add(p);
+            }
+
+            var upper = new List<Point2d>();
+            for (int i = sorted.Count - 1; i >= 0; i--)
+            {
+                var p = sorted[i];
+                while (upper.Count >= 2 && CrossProduct(upper[upper.Count - 2], upper[upper.Count - 1], p) <= 0)
+                {
+                    upper.RemoveAt(upper.Count - 1);
+                }
+                upper.Add(p);
+            }
+
+            lower.RemoveAt(lower.Count - 1);
+            upper.RemoveAt(upper.Count - 1);
+
+            lower.AddRange(upper);
+            return lower;
         }
 
-        // =====================================================================
-        // 5. TẠO HATCH TỪ REGION (TRỰC TIẾP, KHÔNG CẦN POLYLINE)
-        // =====================================================================
-
-        /// <summary>
-        /// Tạo Hatch Solid bên trong Block Definition trực tiếp từ Region.
-        /// Explode Region → thêm boundary curves vào block → dùng ObjectId loop → xóa boundary curves.
-        /// Cách này giữ chính xác đường cong Arc/Circle mà không cần facet.
-        /// </summary>
-        private static void CreateSolidHatchFromRegion(
-            BlockTableRecord blockRecord, Transaction tr, Database db, Region region)
+        private static void CreateSolidHatchFromPolyline(
+            BlockTableRecord blockRecord, Transaction tr, Database db, Polyline polyline)
         {
-            // Explode Region để lấy boundary curves
-            DBObjectCollection boundaryObjs = new DBObjectCollection();
-            region.Explode(boundaryObjs);
-
-            // Phân nhóm boundary curves thành các loop khép kín
-            var allCurves = new List<Curve>();
-            foreach (DBObject obj in boundaryObjs)
-            {
-                if (obj is Curve c) allCurves.Add(c);
-                else obj.Dispose();
-            }
-
-            if (allCurves.Count == 0) return;
-
-            // Thêm tất cả boundary curves vào block (tạm thời, sẽ xóa sau)
-            var tempBoundaryIds = new List<ObjectId>();
-            foreach (var curve in allCurves)
-            {
-                ObjectId curveId = blockRecord.AppendEntity(curve);
-                tr.AddNewlyCreatedDBObject(curve, true);
-                tempBoundaryIds.Add(curveId);
-            }
-
-            // Tạo Hatch
             var hatch = new Hatch();
             hatch.SetDatabaseDefaults(db);
             hatch.PatternScale = 1.0;
             hatch.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
             hatch.HatchStyle = HatchStyle.Normal;
-            hatch.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256); // ByLayer
+            hatch.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
 
             ObjectId hatchId = blockRecord.AppendEntity(hatch);
             tr.AddNewlyCreatedDBObject(hatch, true);
 
-            // Thêm tất cả boundary curves như một Outermost loop
+            ObjectId curveId = blockRecord.AppendEntity(polyline);
+            tr.AddNewlyCreatedDBObject(polyline, true);
+
             var loopIds = new ObjectIdCollection();
-            foreach (var curveId in tempBoundaryIds)
-            {
-                loopIds.Add(curveId);
-            }
+            loopIds.Add(curveId);
 
-            try
-            {
-                hatch.AppendLoop(HatchLoopTypes.External, loopIds);
-                hatch.EvaluateHatch(true);
-            }
-            catch
-            {
-                // Fallback: nếu không gộp được thành 1 loop, thử từng curve riêng
-                try
-                {
-                    // Xóa hatch cũ, tạo lại
-                    hatch.Erase();
+            hatch.AppendLoop(HatchLoopTypes.External, loopIds);
+            hatch.EvaluateHatch(true);
 
-                    var hatch2 = new Hatch();
-                    hatch2.SetDatabaseDefaults(db);
-                    hatch2.PatternScale = 1.0;
-                    hatch2.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
-                    hatch2.HatchStyle = HatchStyle.Normal;
-                    hatch2.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+            try { polyline.Erase(); } catch { }
 
-                    hatchId = blockRecord.AppendEntity(hatch2);
-                    tr.AddNewlyCreatedDBObject(hatch2, true);
-
-                    // Fallback: join curves thành polylines faceted rồi tạo loop
-                    var facetedBoundaries = JoinCurvesToClosedPolylines(allCurves);
-                    if (facetedBoundaries.Count > 0)
-                    {
-                        // Lấy polyline bao ngoài cùng (diện tích lớn nhất)
-                        var outermost = facetedBoundaries.OrderByDescending(p => p.Area).First();
-
-                        ObjectId plId = blockRecord.AppendEntity(outermost);
-                        tr.AddNewlyCreatedDBObject(outermost, true);
-
-                        var fallbackLoop = new ObjectIdCollection { plId };
-                        hatch2.AppendLoop(HatchLoopTypes.Outermost, fallbackLoop);
-                        hatch2.EvaluateHatch(true);
-
-                        outermost.Erase(); // Xóa polyline phụ
-
-                        // Cleanup remaining
-                        foreach (var pl in facetedBoundaries)
-                        {
-                            if (pl != outermost && !pl.IsDisposed) pl.Dispose();
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            // Xóa tất cả boundary curves tạm thời (chỉ giữ hatch)
-            foreach (var curveId in tempBoundaryIds)
-            {
-                try
-                {
-                    var tempCurve = tr.GetObject(curveId, OpenMode.ForWrite) as Entity;
-                    if (tempCurve != null && !tempCurve.IsErased) tempCurve.Erase();
-                }
-                catch { }
-            }
-
-            // Đặt DrawOrder hatch xuống dưới cùng
             SetDrawOrderToBottom(blockRecord, tr, hatchId);
         }
-
-        // =====================================================================
-        // FALLBACK: JOIN CURVES TO POLYLINES (khi Region loop thất bại)
-        // =====================================================================
-
-        private static List<Polyline> JoinCurvesToClosedPolylines(List<Curve> curves)
-        {
-            List<Polyline> results = new List<Polyline>();
-
-            // Chuyển đổi tất cả Curve thành Polyline với 64 segments cho đường cong
-            List<Polyline> facetedPool = new List<Polyline>();
-            foreach (var c in curves)
-            {
-                Polyline faceted = FacetCurveToPolyline(c, 64);
-                if (faceted != null && faceted.NumberOfVertices > 1)
-                {
-                    facetedPool.Add(faceted);
-                }
-            }
-
-            while (facetedPool.Count > 0)
-            {
-                Polyline pl = facetedPool[0];
-                facetedPool.RemoveAt(0);
-
-                bool extended = true;
-                while (extended)
-                {
-                    extended = false;
-                    for (int i = facetedPool.Count - 1; i >= 0; i--)
-                    {
-                        try
-                        {
-                            pl.JoinEntity(facetedPool[i]);
-                            facetedPool[i].Dispose();
-                            facetedPool.RemoveAt(i);
-                            extended = true;
-                        }
-                        catch { }
-                    }
-                }
-                if (!pl.Closed) pl.Closed = true;
-                if (pl.Area > 1e-4) results.Add(pl);
-                else pl.Dispose();
-            }
-            return results;
-        }
-
-        private static Polyline FacetCurveToPolyline(Curve cv, int minSegments)
-        {
-            Polyline pl = new Polyline();
-            pl.Elevation = 0;
-
-            if (cv is Line ln)
-            {
-                pl.AddVertexAt(0, new Point2d(ln.StartPoint.X, ln.StartPoint.Y), 0, 0, 0);
-                pl.AddVertexAt(1, new Point2d(ln.EndPoint.X, ln.EndPoint.Y), 0, 0, 0);
-                return pl;
-            }
-
-            // Với các đường cong (Arc, Circle, Ellipse, Spline)
-            try
-            {
-                double startParam = cv.StartParam;
-                double endParam = cv.EndParam;
-
-                if (cv.GetDistanceAtParameter(endParam) < 1e-4) return null;
-
-                for (int i = 0; i <= minSegments; i++)
-                {
-                    double t = (double)i / minSegments;
-                    double param = startParam + t * (endParam - startParam);
-                    if (i == minSegments) param = endParam;
-
-                    Point3d pt = cv.GetPointAtParameter(param);
-                    pl.AddVertexAt(i, new Point2d(pt.X, pt.Y), 0, 0, 0);
-                }
-                return pl;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        // =====================================================================
-        // DRAW ORDER
-        // =====================================================================
 
         private static void SetDrawOrderToBottom(BlockTableRecord blockRecord, Transaction tr, ObjectId entityId)
         {
