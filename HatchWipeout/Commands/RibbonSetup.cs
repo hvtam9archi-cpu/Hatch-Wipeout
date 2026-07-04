@@ -96,31 +96,31 @@ namespace HatchWipeout.Commands
                 RibbonPanelSource rps = new RibbonPanelSource { Title = PanelTitle, Id = "TH_HATCH_WIPEOUT_PANEL" };
                 RibbonPanel rp = new RibbonPanel { Source = rps };
 
-                // Tạo Button BKHATCH
+                // Tạo Button TH
                 RibbonButton btnHatch = new RibbonButton
                 {
-                    Id = "BKHATCH_BTN",
+                    Id = "TH_BTN",
                     Text = "\nBlock Hatch",
                     ShowText = true,
                     ShowImage = true,
                     Size = RibbonItemSize.Large,
                     Orientation = System.Windows.Controls.Orientation.Vertical,
-                    CommandParameter = "\x03\x03BKHATCH ",
+                    CommandParameter = "\x03\x03" + "TH ",
                     CommandHandler = _cmdHandler,
                     LargeImage = GetTextBitmap(32, "BH"),
                     Image = GetTextBitmap(16, "BH")
                 };
 
-                // Tạo Button BKWIPEOUT
+                // Tạo Button TW
                 RibbonButton btnWipeout = new RibbonButton
                 {
-                    Id = "BKWIPEOUT_BTN",
+                    Id = "TW_BTN",
                     Text = "\nBlock Wipeout",
                     ShowText = true,
                     ShowImage = true,
                     Size = RibbonItemSize.Large,
                     Orientation = System.Windows.Controls.Orientation.Vertical,
-                    CommandParameter = "\x03\x03BKWIPEOUT ",
+                    CommandParameter = "\x03\x03" + "TW ",
                     CommandHandler = _cmdHandler,
                     LargeImage = GetTextBitmap(32, "BW"),
                     Image = GetTextBitmap(16, "BW")

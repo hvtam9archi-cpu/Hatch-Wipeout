@@ -12,9 +12,9 @@ namespace HatchWipeout.Commands
     public class Commands
     {
         /// <summary>
-        /// Lệnh BKHATCH: Chọn Block Reference → tạo Hatch Solid (Convex Hull) bên trong Block Definition.
+        /// Lệnh TH: Chọn Block Reference → tạo Hatch Solid (Convex Hull) bên trong Block Definition.
         /// </summary>
-        [CommandMethod("BKHATCH")]
+        [CommandMethod("TH")]
         public void BlockHatchCommand()
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
@@ -71,9 +71,9 @@ namespace HatchWipeout.Commands
             }
         }
         /// <summary>
-        /// Lệnh BKWIPEOUT: Chọn Block Reference → tạo Wipeout bên trong Block Definition.
+        /// Lệnh TW: Chọn Block Reference → tạo Wipeout bên trong Block Definition.
         /// </summary>
-        [CommandMethod("BKWIPEOUT")]
+        [CommandMethod("TW")]
         public void BlockWipeoutCommand()
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
