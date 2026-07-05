@@ -2,16 +2,28 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace HatchWipeout.Logic
 {
     /// <summary>
-    /// Đoạn thẳng 2D thuần túy, đại diện cho một cạnh hình học đã rời rạc hóa.
+    /// Represents a 2D line segment after discretization of a curve.
+    /// Stores start point (AX, AY) and end point (BX, BY) as flat doubles for performance.
     /// </summary>
     public struct Seg2d
     {
-        public readonly double AX, AY, BX, BY;
+        /// <summary>Start point X coordinate.</summary>
+        public readonly double AX;
+        /// <summary>Start point Y coordinate.</summary>
+        public readonly double AY;
+        /// <summary>End point X coordinate.</summary>
+        public readonly double BX;
+        /// <summary>End point Y coordinate.</summary>
+        public readonly double BY;
 
+        /// <summary>
+        /// Initializes a new 2D segment with raw coordinate values.
+        /// </summary>
         public Seg2d(double ax, double ay, double bx, double by)
         {
             AX = ax; AY = ay; BX = bx; BY = by;
@@ -22,6 +34,7 @@ namespace HatchWipeout.Logic
             AX = a.X; AY = a.Y; BX = b.X; BY = b.Y;
         }
 
+        /// <summary>Gets the squared length of this segment (avoids costly Math.Sqrt).</summary>
         public double LengthSquared
         {
             get
@@ -33,10 +46,12 @@ namespace HatchWipeout.Logic
     }
 
     /// <summary>
-    /// Engine thuật toán Boundary Extraction:
-    ///   GĐ1. Discretization – Chuyển tất cả Curve thành đoạn thẳng (60 phần/đường cong)
-    ///   GĐ2. Fragmentation  – Tìm giao điểm và bẻ gãy (Spatial Grid tối ưu)
-    ///   GĐ3. Boundary Walk  – Truy vết biên ngoài cùng (planar face traversal)
+    /// Core boundary extraction engine implementing a 3-phase algorithm:
+    /// <list type="number">
+    ///   <item><description><b>Discretization</b> — Converts all Curve entities into straight segments (60 segments per curve).</description></item>
+    ///   <item><description><b>Fragmentation</b> — Finds all intersection points (cross + T-junction) using a Spatial Grid for near O(n√n) performance, then splits segments at those points.</description></item>
+    ///   <item><description><b>Boundary Walk</b> — Traces the outermost boundary face using (k+1) rule on sorted adjacency — always follows the RIGHT face (outer boundary).</description></item>
+    /// </list>
     /// </summary>
     public static class BoundaryEngine
     {
@@ -59,7 +74,7 @@ namespace HatchWipeout.Logic
             {
                 if (c == null || c.IsDisposed) continue;
                 try { DiscretizeSingle(c, result); }
-                catch { /* Bỏ qua curve lỗi */ }
+                catch (System.Exception ex) { Debug.WriteLine($"[TH Tools] Discretize error: {ex.Message}"); }
             }
             return result;
         }
@@ -234,7 +249,10 @@ namespace HatchWipeout.Logic
                     px = pt.X; py = pt.Y;
                 }
             }
-            catch { }
+            catch (System.Exception ex)
+            {
+                Debug.WriteLine($"[TH Tools] DiscretizeGeneric error: {ex.Message}");
+            }
         }
 
         // ════════════════════════════════════════════════════════════════
@@ -242,9 +260,12 @@ namespace HatchWipeout.Logic
         // ════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Tìm giao điểm giữa mọi cặp đoạn thẳng (cross + T-intersection) và bẻ gãy tại đó.
-        /// Sử dụng Spatial Grid cho hiệu năng gần O(n√n).
+        /// Finds all intersection points between segment pairs (cross + T-intersection)
+        /// and splits segments at those points.
+        /// Uses a Spatial Grid for near O(n√n) performance instead of brute-force O(n²).
         /// </summary>
+        /// <param name="segs">Input segments (from discretization phase).</param>
+        /// <returns>Fragmented segments — all original segments split at intersection points.</returns>
         public static List<Seg2d> FragmentAtIntersections(List<Seg2d> segs)
         {
             int n = segs.Count;
@@ -348,10 +369,12 @@ namespace HatchWipeout.Logic
         // ════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Tìm tất cả đường biên ngoài cùng từ danh sách đoạn thẳng đã phân mảnh.
-        /// Mỗi connected component cho ra một đường biên khép kín (CCW).
-        /// Thuật toán: Snap vertex → Dedup → Prune dangling → Sort by angle → Walk outer face (k+1 rule).
+        /// Finds all outer boundaries from a list of fragmented segments.
+        /// Each connected component produces one closed CCW boundary loop.
+        /// Pipeline: Snap vertex → Dedup edges → Prune dangling (degree-1) → Sort adjacency by angle → Walk outer face (k+1 rule).
         /// </summary>
+        /// <param name="segments">Fragmented segments from <see cref="FragmentAtIntersections"/>.</param>
+        /// <returns>List of closed boundary loops (each loop is a CCW list of Point2d).</returns>
         public static List<List<Point2d>> FindAllOuterBoundaries(List<Seg2d> segments)
         {
             if (segments.Count == 0) return new List<List<Point2d>>();

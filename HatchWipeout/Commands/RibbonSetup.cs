@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Windows.Input;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Runtime;
@@ -36,8 +37,9 @@ namespace HatchWipeout.Commands
                 Application.Idle -= OnApplicationIdle;
                 Application.SystemVariableChanged -= OnSystemVariableChanged;
             }
-            catch
+            catch (System.Exception ex)
             {
+                Debug.WriteLine($"[TH Tools] Terminate error: {ex.Message}");
             }
         }
 
@@ -186,8 +188,9 @@ namespace HatchWipeout.Commands
                 rtb.Render(visual);
                 return rtb;
             }
-            catch
+            catch (System.Exception ex)
             {
+                Debug.WriteLine($"[TH Tools] GetTextBitmap error: {ex.Message}");
                 return null;
             }
         }

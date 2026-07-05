@@ -4,6 +4,7 @@ using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.ApplicationServices;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace HatchWipeout.Logic
 {
@@ -18,7 +19,7 @@ namespace HatchWipeout.Logic
                 var blockRef = tr.GetObject(blockRefId, OpenMode.ForRead) as BlockReference;
                 if (blockRef == null) continue;
 
-                ObjectId blockRecordId = GetEffectiveBlockTableRecordId(blockRef);
+                ObjectId blockRecordId = BlockGeometryHelper.GetEffectiveBlockTableRecordId(blockRef);
                 uniqueBlockRecordIds.Add(blockRecordId);
             }
 
@@ -47,7 +48,7 @@ namespace HatchWipeout.Logic
 
             // Bước 1: Thu thập tất cả Curve (bao gồm nested block, đã flatten về XY)
             var allCurves = new List<Curve>();
-            CollectCurvesFromBlock(blockRecord, tr, Matrix3d.Identity, allCurves);
+            BlockGeometryHelper.CollectCurvesFromBlock(blockRecord, tr, Matrix3d.Identity, allCurves);
 
             if (allCurves.Count == 0)
             {
@@ -78,7 +79,7 @@ namespace HatchWipeout.Logic
 
                 if (boundaries.Count == 0)
                 {
-                    ed.WriteMessage($"\n  - Không tìm được đường biên ngoài. Thử fallback...");
+                    ed.WriteMessage($"\n  - Không tìm được đường biên ngoài.");
                     return false;
                 }
 
@@ -105,6 +106,7 @@ namespace HatchWipeout.Logic
                     catch (System.Exception ex)
                     {
                         ed.WriteMessage($"\n  - Lỗi tạo Hatch: {ex.Message}");
+                        Debug.WriteLine($"[TH Tools] CreateHatch error: {ex.Message}");
                     }
                     finally
                     {
@@ -127,6 +129,7 @@ namespace HatchWipeout.Logic
             catch (System.Exception ex)
             {
                 ed.WriteMessage($"\n  - [Lỗi] {ex.Message}");
+                Debug.WriteLine($"[TH Tools] ProcessBlockRecord error: {ex.Message}");
             }
             finally
             {
@@ -137,92 +140,6 @@ namespace HatchWipeout.Logic
             return result;
         }
 
-        private static ObjectId GetEffectiveBlockTableRecordId(BlockReference blockRef)
-        {
-            if (blockRef.IsDynamicBlock)
-                return blockRef.DynamicBlockTableRecord;
-            return blockRef.BlockTableRecord;
-        }
-
-        private static void CollectCurvesFromBlock(
-            BlockTableRecord btr, Transaction tr, Matrix3d parentTransform,
-            List<Curve> allCurves)
-        {
-            foreach (ObjectId id in btr)
-            {
-                Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                if (ent == null || !ent.Visible) continue;
-
-                Entity clonedEnt = ent.Clone() as Entity;
-                clonedEnt.TransformBy(parentTransform);
-
-                if (clonedEnt is BlockReference blockRef)
-                {
-                    try
-                    {
-                        ObjectId nestedRecordId = GetEffectiveBlockTableRecordId(blockRef);
-                        var nestedRecord = tr.GetObject(nestedRecordId, OpenMode.ForRead) as BlockTableRecord;
-                        if (nestedRecord != null)
-                        {
-                            CollectCurvesFromBlock(nestedRecord, tr,
-                                parentTransform * blockRef.BlockTransform, allCurves);
-                        }
-                    }
-                    catch { }
-                    clonedEnt.Dispose();
-                }
-                else if (clonedEnt is Curve curve)
-                {
-                    Curve flat = FlattenCurve(curve);
-                    if (flat != null) allCurves.Add(flat);
-                    clonedEnt.Dispose();
-                }
-                else
-                {
-                    clonedEnt.Dispose();
-                }
-            }
-        }
-
-        private static Curve FlattenCurve(Curve cv)
-        {
-            try
-            {
-                var c = cv.Clone() as Curve;
-                if (c is Polyline3d || c is Polyline2d)
-                {
-                    return cv.Clone() as Curve;
-                }
-                
-                if (c is Line ln)
-                {
-                    ln.StartPoint = new Point3d(ln.StartPoint.X, ln.StartPoint.Y, 0);
-                    ln.EndPoint = new Point3d(ln.EndPoint.X, ln.EndPoint.Y, 0);
-                    return ln;
-                }
-                if (c is Polyline pl)
-                {
-                    pl.Elevation = 0;
-                    pl.Normal = Vector3d.ZAxis;
-                    return pl;
-                }
-                if (c is Circle cir)
-                {
-                    cir.Center = new Point3d(cir.Center.X, cir.Center.Y, 0);
-                    cir.Normal = Vector3d.ZAxis;
-                    return cir;
-                }
-                if (c is Arc arc)
-                {
-                    arc.Center = new Point3d(arc.Center.X, arc.Center.Y, 0);
-                    arc.Normal = Vector3d.ZAxis;
-                    return arc;
-                }
-                return c;
-            }
-            catch { return null; }
-        }
-
         private static void CreateSolidHatchFromPolyline(
             BlockTableRecord blockRecord, Transaction tr, Database db, Polyline polyline)
         {
@@ -231,10 +148,11 @@ namespace HatchWipeout.Logic
             hatch.PatternScale = 1.0;
             hatch.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
             hatch.HatchStyle = HatchStyle.Normal;
-            
-            GetOrCreateLayer(db, tr, "TH_Hatch&Wipeout");
-            hatch.Layer = "TH_Hatch&Wipeout";
-            hatch.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(222, 222, 222);
+
+            // Sử dụng layer riêng cho Hatch
+            BlockGeometryHelper.GetOrCreateLayer(db, tr, "TH_Hatch");
+            hatch.Layer = "TH_Hatch";
+            hatch.Color = Color.FromRgb(222, 222, 222);
 
             ObjectId hatchId = blockRecord.AppendEntity(hatch);
             tr.AddNewlyCreatedDBObject(hatch, true);
@@ -248,41 +166,17 @@ namespace HatchWipeout.Logic
             hatch.AppendLoop(HatchLoopTypes.External, loopIds);
             hatch.EvaluateHatch(true);
 
-            try { polyline.Erase(); } catch { }
-
-            SetDrawOrderToBottom(blockRecord, tr, hatchId);
-        }
-
-        private static ObjectId GetOrCreateLayer(Database db, Transaction tr, string layerName)
-        {
-            var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-            if (lt.Has(layerName))
+            try
             {
-                return lt[layerName];
+                if (!polyline.IsDisposed)
+                    polyline.Erase();
             }
-            
-            // Create new layer based on Layer 0 properties
-            var layer0 = (LayerTableRecord)tr.GetObject(lt["0"], OpenMode.ForRead);
-            
-            lt.UpgradeOpen();
-            var newLayer = new LayerTableRecord();
-            newLayer.Name = layerName;
-            newLayer.Color = layer0.Color;
-            newLayer.LineWeight = layer0.LineWeight;
-            newLayer.LinetypeObjectId = layer0.LinetypeObjectId;
-            
-            ObjectId layerId = lt.Add(newLayer);
-            tr.AddNewlyCreatedDBObject(newLayer, true);
-            return layerId;
-        }
+            catch (System.Exception ex)
+            {
+                Debug.WriteLine($"[TH Tools] Erase polyline error: {ex.Message}");
+            }
 
-        private static void SetDrawOrderToBottom(BlockTableRecord blockRecord, Transaction tr, ObjectId entityId)
-        {
-            var drawOrderTable = tr.GetObject(blockRecord.DrawOrderTableId, OpenMode.ForWrite) as DrawOrderTable;
-            if (drawOrderTable == null) return;
-
-            var entityIds = new ObjectIdCollection { entityId };
-            drawOrderTable.MoveToBottom(entityIds);
+            BlockGeometryHelper.SetDrawOrderToBottom(blockRecord, tr, hatchId);
         }
     }
 }
