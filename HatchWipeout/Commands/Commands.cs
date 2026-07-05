@@ -71,7 +71,7 @@ namespace HatchWipeout.Commands
             }
         }
         /// <summary>
-        /// Lệnh TW: Chọn Block Reference → tạo Wipeout bên trong Block Definition.
+        /// Lệnh TW: Chọn Block Reference → tạo Wipeout (Boundary Extraction) bên trong Block Definition.
         /// </summary>
         [CommandMethod("TW")]
         public void BlockWipeoutCommand()
@@ -83,7 +83,7 @@ namespace HatchWipeout.Commands
 
             try
             {
-                ed.WriteMessage("\n>> Chọn các Block Reference để tạo Wipeout: ");
+                ed.WriteMessage("\n>> Chọn các Block Reference để tạo Wipeout (Boundary Extraction): ");
                 var filter = new SelectionFilter(new[]
                 {
                     new TypedValue((int)DxfCode.Start, "INSERT")

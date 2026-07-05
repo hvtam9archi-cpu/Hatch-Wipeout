@@ -231,7 +231,10 @@ namespace HatchWipeout.Logic
             hatch.PatternScale = 1.0;
             hatch.SetHatchPattern(HatchPatternType.PreDefined, "SOLID");
             hatch.HatchStyle = HatchStyle.Normal;
-            hatch.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+            
+            GetOrCreateLayer(db, tr, "TH_Hatch&Wipeout");
+            hatch.Layer = "TH_Hatch&Wipeout";
+            hatch.Color = Autodesk.AutoCAD.Colors.Color.FromRgb(222, 222, 222);
 
             ObjectId hatchId = blockRecord.AppendEntity(hatch);
             tr.AddNewlyCreatedDBObject(hatch, true);
@@ -248,6 +251,29 @@ namespace HatchWipeout.Logic
             try { polyline.Erase(); } catch { }
 
             SetDrawOrderToBottom(blockRecord, tr, hatchId);
+        }
+
+        private static ObjectId GetOrCreateLayer(Database db, Transaction tr, string layerName)
+        {
+            var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (lt.Has(layerName))
+            {
+                return lt[layerName];
+            }
+            
+            // Create new layer based on Layer 0 properties
+            var layer0 = (LayerTableRecord)tr.GetObject(lt["0"], OpenMode.ForRead);
+            
+            lt.UpgradeOpen();
+            var newLayer = new LayerTableRecord();
+            newLayer.Name = layerName;
+            newLayer.Color = layer0.Color;
+            newLayer.LineWeight = layer0.LineWeight;
+            newLayer.LinetypeObjectId = layer0.LinetypeObjectId;
+            
+            ObjectId layerId = lt.Add(newLayer);
+            tr.AddNewlyCreatedDBObject(newLayer, true);
+            return layerId;
         }
 
         private static void SetDrawOrderToBottom(BlockTableRecord blockRecord, Transaction tr, ObjectId entityId)
