@@ -106,8 +106,9 @@ namespace HatchWipeout.Logic
 
                 if (c is Polyline3d || c is Polyline2d)
                 {
-                    // Các loại polyline này đã ở dạng 2D, trả về bản sao mới
-                    Curve result = cv.Clone() as Curve;
+                    // Đã clone ở trên, trả về luôn bản clone thay vì clone thêm lần nữa
+                    Curve result = c;
+                    c = null; // Tránh dispose ở finally
                     return result;
                 }
 

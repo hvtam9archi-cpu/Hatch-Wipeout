@@ -48,8 +48,8 @@ namespace HatchWipeout.Logic
     /// <summary>
     /// Core boundary extraction engine implementing a 3-phase algorithm:
     /// <list type="number">
-    ///   <item><description><b>Discretization</b> — Converts all Curve entities into straight segments (60 segments per curve).</description></item>
-    ///   <item><description><b>Fragmentation</b> — Finds all intersection points (cross + T-junction) using a Spatial Grid for near O(n√n) performance, then splits segments at those points.</description></item>
+    ///   <item><description><b>Discretization</b> — Converts all Curve entities into straight segments (adaptive segment count based on sweep angle).</description></item>
+    ///   <item><description><b>Fragmentation</b> — Finds all intersection points (cross + T-junction) using a Spatial Grid with zero-allocation dedup for near O(n√n) performance, then splits segments at those points.</description></item>
     ///   <item><description><b>Boundary Walk</b> — Traces the outermost boundary face using (k+1) rule on sorted adjacency — always follows the RIGHT face (outer boundary).</description></item>
     /// </list>
     /// </summary>
@@ -57,7 +57,20 @@ namespace HatchWipeout.Logic
     {
         private const double Tol = 1e-6;
         private const double TolSq = Tol * Tol;
-        private const int ArcSegments = 60;
+        private const int MinArcSegments = 8;
+        private const int MaxArcSegments = 60;
+
+        /// <summary>
+        /// Tính số phân đoạn tối ưu dựa trên góc quét (sweep angle).
+        /// Tỷ lệ thuận: full circle (2π) → MaxArcSegments, half circle → 30, tiny arc → MinArcSegments.
+        /// Giúp giảm đáng kể tổng số segment cho các block có nhiều cung nhỏ.
+        /// </summary>
+        private static int ComputeSegmentCount(double sweepRadians)
+        {
+            double ratio = Math.Abs(sweepRadians) / (2.0 * Math.PI);
+            int count = (int)Math.Ceiling(MaxArcSegments * ratio);
+            return Math.Max(MinArcSegments, Math.Min(MaxArcSegments, count));
+        }
 
         // ════════════════════════════════════════════════════════════════
         //  GIAI ĐOẠN 1: DISCRETIZATION
@@ -65,11 +78,11 @@ namespace HatchWipeout.Logic
 
         /// <summary>
         /// Chuyển toàn bộ danh sách Curve (đã flatten về mặt phẳng XY) thành các đoạn thẳng.
-        /// Mỗi đường cong được chia thành 60 đoạn thẳng liên tiếp.
+        /// Sử dụng adaptive segment count: curve quét góc nhỏ → ít đoạn, full circle → 60 đoạn.
         /// </summary>
         public static List<Seg2d> DiscretizeCurves(List<Curve> curves)
         {
-            var result = new List<Seg2d>(curves.Count * ArcSegments);
+            var result = new List<Seg2d>(curves.Count * 20);
             foreach (var c in curves)
             {
                 if (c == null || c.IsDisposed) continue;
@@ -131,8 +144,8 @@ namespace HatchWipeout.Logic
         }
 
         /// <summary>
-        /// Chia cung tròn (xác định bởi 2 endpoint + bulge) thành 60 đoạn thẳng.
-        /// Sử dụng công thức lượng giác thuần túy.
+        /// Chia cung tròn (xác định bởi 2 endpoint + bulge) thành các đoạn thẳng.
+        /// Số lượng đoạn tỷ lệ thuận với góc quét (adaptive): tiny arc → 8, full circle → 60.
         /// </summary>
         private static void SubdivideArc(double x1, double y1, double x2, double y2,
                                           double bulge, List<Seg2d> output)
@@ -144,6 +157,8 @@ namespace HatchWipeout.Logic
             double theta = 4.0 * Math.Atan(Math.Abs(bulge));
             double halfSin = Math.Sin(theta * 0.5);
             if (Math.Abs(halfSin) < Tol) return;
+
+            int segCount = ComputeSegmentCount(theta);
 
             double r = chord / (2.0 * halfSin);
             double mx = (x1 + x2) * 0.5, my = (y1 + y2) * 0.5;
@@ -161,9 +176,9 @@ namespace HatchWipeout.Logic
             else            { if (sweep >= -Tol) sweep -= Math.PI * 2; }
 
             double px = x1, py = y1;
-            for (int k = 1; k <= ArcSegments; k++)
+            for (int k = 1; k <= segCount; k++)
             {
-                double a = sa + sweep * k / ArcSegments;
+                double a = sa + sweep * k / segCount;
                 double qx = cx + r * Math.Cos(a), qy = cy + r * Math.Sin(a);
                 output.Add(new Seg2d(px, py, qx, qy));
                 px = qx; py = qy;
@@ -173,10 +188,11 @@ namespace HatchWipeout.Logic
         private static void DiscretizeCircle(Circle ci, List<Seg2d> output)
         {
             double cx = ci.Center.X, cy = ci.Center.Y, r = ci.Radius;
+            // Full circle luôn dùng MaxArcSegments (góc quét 2π → ratio = 1.0)
             double px = cx + r, py = cy;
-            for (int k = 1; k <= ArcSegments; k++)
+            for (int k = 1; k <= MaxArcSegments; k++)
             {
-                double a = Math.PI * 2 * k / ArcSegments;
+                double a = Math.PI * 2 * k / MaxArcSegments;
                 double qx = cx + r * Math.Cos(a), qy = cy + r * Math.Sin(a);
                 output.Add(new Seg2d(px, py, qx, qy));
                 px = qx; py = qy;
@@ -190,10 +206,12 @@ namespace HatchWipeout.Logic
             double sweep = ea - sa;
             if (sweep <= 0) sweep += Math.PI * 2;
 
+            int segCount = ComputeSegmentCount(sweep);
+
             double px = cx + r * Math.Cos(sa), py = cy + r * Math.Sin(sa);
-            for (int k = 1; k <= ArcSegments; k++)
+            for (int k = 1; k <= segCount; k++)
             {
-                double a = sa + sweep * k / ArcSegments;
+                double a = sa + sweep * k / segCount;
                 double qx = cx + r * Math.Cos(a), qy = cy + r * Math.Sin(a);
                 output.Add(new Seg2d(px, py, qx, qy));
                 px = qx; py = qy;
@@ -217,10 +235,12 @@ namespace HatchWipeout.Logic
             double range = ep - sp;
             if (Math.Abs(range) < Tol) return;
 
+            int segCount = ComputeSegmentCount(range);
+
             double px = 0, py = 0;
-            for (int k = 0; k <= ArcSegments; k++)
+            for (int k = 0; k <= segCount; k++)
             {
-                double t = sp + range * k / ArcSegments;
+                double t = sp + range * k / segCount;
                 double lx = semiA * Math.Cos(t), ly = semiB * Math.Sin(t);
                 double qx = ccx + lx * ux + ly * vx;
                 double qy = ccy + lx * uy + ly * vy;
@@ -230,7 +250,8 @@ namespace HatchWipeout.Logic
         }
 
         /// <summary>
-        /// Fallback cho Spline và các loại Curve khác: dùng GetPointAtParameter chia đều 60 phần.
+        /// Fallback cho Spline và các loại Curve khác: dùng GetPointAtParameter chia đều.
+        /// Không xác định được sweep angle nên dùng MaxArcSegments.
         /// </summary>
         private static void DiscretizeGeneric(Curve curve, List<Seg2d> output)
         {
@@ -241,9 +262,9 @@ namespace HatchWipeout.Logic
                 if (Math.Abs(range) < Tol) return;
 
                 double px = 0, py = 0;
-                for (int k = 0; k <= ArcSegments; k++)
+                for (int k = 0; k <= MaxArcSegments; k++)
                 {
-                    double param = sp + range * k / ArcSegments;
+                    double param = sp + range * k / MaxArcSegments;
                     var pt = curve.GetPointAtParameter(param);
                     if (k > 0) output.Add(new Seg2d(px, py, pt.X, pt.Y));
                     px = pt.X; py = pt.Y;
@@ -262,7 +283,7 @@ namespace HatchWipeout.Logic
         /// <summary>
         /// Finds all intersection points between segment pairs (cross + T-intersection)
         /// and splits segments at those points.
-        /// Uses a Spatial Grid for near O(n√n) performance instead of brute-force O(n²).
+        /// Uses a Spatial Grid with zero-allocation dedup for near O(n√n) performance.
         /// </summary>
         /// <param name="segs">Input segments (from discretization phase).</param>
         /// <returns>Fragmented segments — all original segments split at intersection points.</returns>
@@ -272,32 +293,35 @@ namespace HatchWipeout.Logic
             if (n < 2) return new List<Seg2d>(segs);
 
             var grid = new SpatialGrid(segs);
-            var splits = new List<double>[n];
-            for (int i = 0; i < n; i++) splits[i] = new List<double>();
+            // Lazy allocation: chỉ tạo List<double> khi thực sự có intersection
+            var splits = new List<double>[n]; // null by default
 
-            var checkedPairs = new HashSet<long>();
+            // Buffer tái sử dụng cho candidates — tránh allocation mỗi lần gọi
+            var candidateBuffer = new List<int>(64);
 
             for (int i = 0; i < n; i++)
             {
-                foreach (int j in grid.GetCandidates(i))
+                grid.GetCandidatesAbove(i, candidateBuffer);
+
+                for (int ci = 0; ci < candidateBuffer.Count; ci++)
                 {
-                    if (j <= i) continue;
-                    long key = ((long)i << 32) | (uint)j;
-                    if (!checkedPairs.Add(key)) continue;
+                    int j = candidateBuffer[ci];
 
                     // Pass 1: Cross intersection (cả t và s đều nằm trong segment)
                     double ti, tj;
                     if (CrossIntersect(segs[i], segs[j], out ti, out tj))
                     {
+                        if (splits[i] == null) splits[i] = new List<double>(4);
                         splits[i].Add(ti);
+                        if (splits[j] == null) splits[j] = new List<double>(4);
                         splits[j].Add(tj);
                     }
 
                     // Pass 2: T-intersection (endpoint của segment này nằm trên interior segment kia)
-                    PointOnInterior(segs[j].AX, segs[j].AY, segs[i], splits[i]);
-                    PointOnInterior(segs[j].BX, segs[j].BY, segs[i], splits[i]);
-                    PointOnInterior(segs[i].AX, segs[i].AY, segs[j], splits[j]);
-                    PointOnInterior(segs[i].BX, segs[i].BY, segs[j], splits[j]);
+                    PointOnInterior(segs[j].AX, segs[j].AY, segs[i], splits, i);
+                    PointOnInterior(segs[j].BX, segs[j].BY, segs[i], splits, i);
+                    PointOnInterior(segs[i].AX, segs[i].AY, segs[j], splits, j);
+                    PointOnInterior(segs[i].BX, segs[i].BY, segs[j], splits, j);
                 }
             }
 
@@ -305,7 +329,7 @@ namespace HatchWipeout.Logic
             var result = new List<Seg2d>(n * 2);
             for (int i = 0; i < n; i++)
             {
-                if (splits[i].Count == 0) { result.Add(segs[i]); continue; }
+                if (splits[i] == null || splits[i].Count == 0) { result.Add(segs[i]); continue; }
                 splits[i].Sort();
                 SplitSegment(segs[i], splits[i], result);
             }
@@ -329,8 +353,8 @@ namespace HatchWipeout.Logic
             return t > Tol && t < 1 - Tol && s > Tol && s < 1 - Tol;
         }
 
-        /// <summary>Kiểm tra điểm (px,py) có nằm trên phần nội bộ của segment không → thêm split.</summary>
-        private static void PointOnInterior(double px, double py, Seg2d seg, List<double> splits)
+        /// <summary>Kiểm tra điểm (px,py) có nằm trên phần nội bộ của segment không → thêm split (lazy allocation).</summary>
+        private static void PointOnInterior(double px, double py, Seg2d seg, List<double>[] splits, int segIdx)
         {
             double dx = seg.BX - seg.AX, dy = seg.BY - seg.AY;
             double lenSq = dx * dx + dy * dy;
@@ -342,7 +366,8 @@ namespace HatchWipeout.Logic
             double cross = (px - seg.AX) * dy - (py - seg.AY) * dx;
             if (cross * cross > TolSq * lenSq) return;
 
-            splits.Add(t);
+            if (splits[segIdx] == null) splits[segIdx] = new List<double>(4);
+            splits[segIdx].Add(t);
         }
 
         /// <summary>Chặt segment thành nhiều sub-segment tại các giá trị t đã sắp xếp.</summary>
@@ -611,17 +636,22 @@ namespace HatchWipeout.Logic
         /// <summary>
         /// Spatial Grid tăng tốc tìm giao điểm — giảm từ O(n²) xuống gần O(n√n).
         /// Chia không gian thành lưới ô vuông, chỉ kiểm tra các cặp segment trong cùng ô.
+        /// Sử dụng generation counter cho zero-allocation dedup thay vì HashSet mỗi lần gọi.
         /// </summary>
         private class SpatialGrid
         {
             private readonly Dictionary<long, List<int>> cells;
             private readonly double cellSize, ox, oy;
             private readonly List<Seg2d> segs;
+            private readonly int[] seen; // Zero-alloc dedup: seen[j] == generation → đã xử lý
+            private int generation;
 
             public SpatialGrid(List<Seg2d> segments)
             {
                 segs = segments;
                 cells = new Dictionary<long, List<int>>();
+                seen = new int[segments.Count];
+                generation = 0;
 
                 double minX = double.MaxValue, minY = double.MaxValue;
                 double maxX = double.MinValue, maxY = double.MinValue;
@@ -657,21 +687,34 @@ namespace HatchWipeout.Logic
 
             private int CellIdx(double v) => (int)Math.Floor(v / cellSize);
 
-            public IEnumerable<int> GetCandidates(int idx)
+            /// <summary>
+            /// Trả về các candidate segment có index lớn hơn idx, đã dedup.
+            /// Sử dụng generation counter thay vì HashSet → zero allocation per call.
+            /// Loại bỏ nhu cầu dùng checkedPairs HashSet&lt;long&gt; ở caller.
+            /// </summary>
+            public void GetCandidatesAbove(int idx, List<int> output)
             {
+                output.Clear();
+                generation++;
+                seen[idx] = generation; // Self-exclude
+
                 var s = segs[idx];
                 int x0 = CellIdx(Math.Min(s.AX, s.BX) - ox);
                 int y0 = CellIdx(Math.Min(s.AY, s.BY) - oy);
                 int x1 = CellIdx(Math.Max(s.AX, s.BX) - ox);
                 int y1 = CellIdx(Math.Max(s.AY, s.BY) - oy);
-                var seen = new HashSet<int>();
+
                 for (int cx = x0; cx <= x1; cx++)
                     for (int cy = y0; cy <= y1; cy++)
                     {
                         long k = CellKey(cx, cy);
                         if (cells.TryGetValue(k, out var l))
                             foreach (int j in l)
-                                if (j != idx && seen.Add(j)) yield return j;
+                                if (j > idx && seen[j] != generation)
+                                {
+                                    seen[j] = generation;
+                                    output.Add(j);
+                                }
                     }
             }
 
